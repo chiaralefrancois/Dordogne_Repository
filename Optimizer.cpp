@@ -1,4 +1,10 @@
 #include "Optimizer.h"
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <limits>
+#include <numeric>
+#include <random>
 
 // Random number generator
 double random_double(double min, double max) {
@@ -8,198 +14,155 @@ double random_double(double min, double max) {
     return dist(gen);
 }
 
-// Constructor definitions
+// Constructors
 Optimizer::Optimizer() : objectiveFunction(nullptr) {}
-
 Optimizer::Optimizer(func objectiveFunction) : objectiveFunction(objectiveFunction) {}
 
-// PSO algorithm
-vector<double> Optimizer::pso(int dim, int swarm_size, int max_iter, double lower_bound, double upper_bound) {
-    // Check if the objective function is set
-    if (!objectiveFunction) {
-        cerr << "Error: Objective function not set!" << endl;
-        return {};
+// Approximation of the gradient by finite differences
+std::vector<double> compute_gradient(std::vector<double> x, func objectiveFunction, double h = 1e-5) {
+    int dim = x.size();
+    std::vector<double> grad(dim);
+
+    for (int i = 0; i < dim; ++i) {
+        std::vector<double> x_forward = x, x_backward = x;
+        x_forward[i] += h;
+        x_backward[i] -= h;
+        grad[i] = (objectiveFunction(x_forward) - objectiveFunction(x_backward)) / (2 * h);
     }
-
-    // PSO parameters
-    const double w = 0.5;  // Inertia weight
-    const double c1 = 1.5; // Personal attraction coefficient
-    const double c2 = 1.5; // Social attraction coefficient
-
-    // Particle initialization
-    vector<vector<double>> positions(swarm_size, vector<double>(dim));
-    vector<vector<double>> velocities(swarm_size, vector<double>(dim, 0.0));
-    vector<vector<double>> personal_best_positions = positions;
-    vector<double> personal_best_values(swarm_size, numeric_limits<double>::max());
-    vector<double> global_best_position(dim);
-    double global_best_value = numeric_limits<double>::max();
-
-    // Random initialization of particles
-    for (int i = 0; i < swarm_size; ++i) {
-        for (int j = 0; j < dim; ++j) {
-            positions[i][j] = random_double(lower_bound, upper_bound);
-            velocities[i][j] = random_double(-1.0, 1.0);
-        }
-    }
-
-    // Main PSO loop
-    for (int iter = 0; iter < max_iter; ++iter) {
-        for (int i = 0; i < swarm_size; ++i) {
-            // Compute the objective function value for the particle
-            double fitness = objectiveFunction(positions[i]);
-
-            // Update the personal best position
-            if (fitness < personal_best_values[i]) {
-                personal_best_values[i] = fitness;
-                personal_best_positions[i] = positions[i];
-            }
-
-            // Update the global best position
-            if (fitness < global_best_value) {
-                global_best_value = fitness;
-                global_best_position = positions[i];
-            }
-        }
-
-        // Update positions and velocities of the particles
-        for (int i = 0; i < swarm_size; ++i) {
-            for (int j = 0; j < dim; ++j) {
-                double r1 = random_double(0.0, 1.0);
-                double r2 = random_double(0.0, 1.0);
-
-                velocities[i][j] = w * velocities[i][j] +
-                    c1 * r1 * (personal_best_positions[i][j] - positions[i][j]) +
-                    c2 * r2 * (global_best_position[j] - positions[i][j]);
-
-                positions[i][j] += velocities[i][j];
-
-                // Apply boundary constraints (clamping)
-                if (positions[i][j] < lower_bound) positions[i][j] = lower_bound;
-                if (positions[i][j] > upper_bound) positions[i][j] = upper_bound;
-            }
-        }
-
-        // Display the current state
-        cout << "Iteration " << iter + 1 << ": Best Value = " << global_best_value << endl;
-    }
-
-    return global_best_position;
+    return grad;
 }
 
+// Matrix-vector multiplication
+std::vector<double> mat_vec_mult(const std::vector<std::vector<double>>& mat, const std::vector<double>& vec) {
+    int n = mat.size();
+    std::vector<double> result(n, 0.0);
 
-vector<double> Optimizer::nelder_mead(int dim, int max_iter, double tol, double lower_bound, double upper_bound) {
-    // Ojective function check
-    if (!objectiveFunction) {
-        cerr << "Error: Objective function not set!" << endl;
-        return {};
-    }
-
-    // Simplex initialization
-    vector<vector<double>> simplex(dim + 1, vector<double>(dim));
-    vector<double> f_values(dim + 1);
-
-    // Initialization of simplex points (random)
-    for (int i = 0; i < dim + 1; ++i) {
-        for (int j = 0; j < dim; ++j) {
-            simplex[i][j] = random_double(lower_bound, upper_bound);
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            result[i] += mat[i][j] * vec[j];
         }
     }
+    return result;
+}
 
-    // Evaluation of objective function for each submits of the simplex
-    for (int i = 0; i < dim + 1; ++i) {
-        f_values[i] = objectiveFunction(simplex[i]);
+// Update of matrix H (DFP)
+std::vector<std::vector<double>> update_H(const std::vector<std::vector<double>>& H,
+    const std::vector<double>& delta_x,
+    const std::vector<double>& delta_grad) {
+    int n = delta_x.size();
+
+    double delta_x_dot_delta_grad = std::inner_product(delta_x.begin(), delta_x.end(), delta_grad.begin(), 0.0);
+    if (std::abs(delta_x_dot_delta_grad) < 1e-8) {
+        return H; // Avoid division by zero, do not update H
     }
 
-    int iter = 0;
-    while (iter < max_iter) {
-        // Order
-        vector<int> order(dim + 1);
-        iota(order.begin(), order.end(), 0);
-        sort(order.begin(), order.end(), [&](int i, int j) {
-            return f_values[i] < f_values[j];
-            });
+    std::vector<double> H_delta_grad = mat_vec_mult(H, delta_grad);
+    double delta_grad_dot_H_delta_grad = std::inner_product(delta_grad.begin(), delta_grad.end(), H_delta_grad.begin(), 0.0);
 
-        vector<vector<double>> sorted_simplex(dim + 1);
-        vector<double> sorted_f_values(dim + 1);
-        for (int i = 0; i < dim + 1; ++i) {
-            sorted_simplex[i] = simplex[order[i]];
-            sorted_f_values[i] = f_values[order[i]];
+    if (std::abs(delta_grad_dot_H_delta_grad) < 1e-8) {
+        return H;
+    }
+
+    std::vector<std::vector<double>> new_H = H;
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            new_H[i][j] += (delta_x[i] * delta_x[j] / delta_x_dot_delta_grad)
+                - (H_delta_grad[i] * H_delta_grad[j] / delta_grad_dot_H_delta_grad);
+        }
+    }
+
+    return new_H;
+}
+
+// Line Search
+double Optimizer::line_search(const std::vector<double> x, const std::vector<double>& d) {
+    double alpha = 1.0;
+    double rho = 0.5;  // Faster reduction 
+    double c = 1e-4;
+
+    double f0 = objectiveFunction(x);
+    std::vector<double> grad = compute_gradient(x, objectiveFunction);
+
+    while (true) {
+        std::vector<double> x_new(x.size());
+        for (size_t i = 0; i < x.size(); ++i) {
+            x_new[i] = x[i] + alpha * d[i];
         }
 
-        // 
-        vector<double> centroid(dim, 0.0);
-        for (int i = 0; i < dim; ++i) {
-            for (int j = 0; j < dim; ++j) {
-                centroid[j] += sorted_simplex[i][j];
-            }
-        }
-        for (int j = 0; j < dim; ++j) {
-            centroid[j] /= dim;
-        }
+        double f_new = objectiveFunction(x_new);
+        double lhs = f_new;
+        double rhs = f0 + c * alpha * std::inner_product(grad.begin(), grad.end(), d.begin(), 0.0);
 
-        //  (Reflexion) 
-        vector<double> reflected_point(dim);
-        for (int i = 0; i < dim; ++i) {
-            reflected_point[i] = centroid[i] + (centroid[i] - sorted_simplex[dim][i]);
-        }
-
-        double reflected_f_value = objectiveFunction(reflected_point);
-
-        if (reflected_f_value < sorted_f_values[dim - 1]) {
-            if (reflected_f_value < sorted_f_values[0]) {
-                vector<double> expanded_point(dim);
-                for (int i = 0; i < dim; ++i) {
-                    expanded_point[i] = centroid[i] + 2 * (centroid[i] - sorted_simplex[dim][i]);
-                }
-                double expanded_f_value = objectiveFunction(expanded_point);
-                if (expanded_f_value < reflected_f_value) {
-                    sorted_simplex[dim] = expanded_point;
-                    f_values[dim] = expanded_f_value;
-                }
-                else {
-                    sorted_simplex[dim] = reflected_point;
-                    f_values[dim] = reflected_f_value;
-                }
-            }
-            else {
-                sorted_simplex[dim] = reflected_point;
-                f_values[dim] = reflected_f_value;
-            }
-        }
-        else {
-            vector<double> contracted_point(dim);
-            for (int i = 0; i < dim; ++i) {
-                contracted_point[i] = centroid[i] + 0.5 * (sorted_simplex[dim][i] - centroid[i]);
-            }
-            double contracted_f_value = objectiveFunction(contracted_point);
-            if (contracted_f_value < f_values[dim]) {
-                sorted_simplex[dim] = contracted_point;
-                f_values[dim] = contracted_f_value;
-            }
-            else {
-                for (int i = 1; i < dim + 1; ++i) {
-                    for (int j = 0; j < dim; ++j) {
-                        sorted_simplex[i][j] = sorted_simplex[0][j] + 0.5 * (sorted_simplex[i][j] - sorted_simplex[0][j]);
-                    }
-                    f_values[i] = objectiveFunction(sorted_simplex[i]);
-                }
-            }
-        }
-
-
-        double max_diff = 0.0;
-        for (int i = 0; i < dim + 1; ++i) {
-            for (int j = 0; j < dim; ++j) {
-                max_diff = max(max_diff, fabs(sorted_simplex[i][j] - sorted_simplex[0][j]));
-            }
-        }
-
-        if (max_diff < tol) {
+        if (lhs <= rhs) {
             break;
         }
 
+        alpha *= rho;
+    }
+
+    return alpha;
+}
+
+// DFP Algorithm
+std::vector<double> Optimizer::dfp(int dim, int max_iter, double tol, double lower_bound, double upper_bound) {
+    if (!objectiveFunction) {
+        std::cerr << "Error: Objective function not set!" << std::endl;
+        return {};
+    }
+
+    std::vector<double> x(dim);
+    for (int i = 0; i < dim; ++i) {
+        x[i] = lower_bound + (upper_bound - lower_bound) * 0.5 + random_double(-5.0, 5.0);
+    }
+
+    std::vector<std::vector<double>> H(dim, std::vector<double>(dim, 0.0));
+    for (int i = 0; i < dim; ++i) {
+        H[i][i] = 1.0;
+    }
+
+    std::vector<double> grad = compute_gradient(x, objectiveFunction);
+    int iter = 0;
+
+    while (iter < max_iter) {
+        double grad_norm = std::sqrt(std::inner_product(grad.begin(), grad.end(), grad.begin(), 0.0));
+        if (grad_norm < tol) {
+            break;
+        }
+
+        std::vector<double> d = mat_vec_mult(H, grad);
+        for (double& di : d) di = -di;
+
+        double alpha = line_search(x, d);
+
+        std::vector<double> x_new(dim);
+        for (int i = 0; i < dim; ++i) {
+            x_new[i] = x[i] + alpha * d[i];
+            x_new[i] = std::max(lower_bound, std::min(upper_bound, x_new[i]));
+        }
+
+        std::vector<double> grad_new = compute_gradient(x_new, objectiveFunction);
+        std::vector<double> delta_x(dim), delta_grad(dim);
+        for (int i = 0; i < dim; ++i) {
+            delta_x[i] = x_new[i] - x[i];
+            delta_grad[i] = grad_new[i] - grad[i];
+        }
+
+        double delta_x_dot_delta_grad = std::inner_product(delta_x.begin(), delta_x.end(), delta_grad.begin(), 0.0);
+        if (std::abs(delta_x_dot_delta_grad) > 1e-8) {
+            H = update_H(H, delta_x, delta_grad);
+        }
+
+        x = x_new;
+        grad = grad_new;
+
+        std::cout << "Iteration " << iter + 1 << ": Objective value = " << objectiveFunction(x) << std::endl;
         iter++;
     }
 
-    return simplex[0];
+    std::cout << "\nOptimization complete after " << iter << " iterations." << std::endl;
+    std::cout << "Minimum found at: ";
+    for (double xi : x) std::cout << xi << " ";
+    std::cout << "\nMinimum value: " << objectiveFunction(x) << std::endl;
+
+    return x;
 }

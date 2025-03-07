@@ -1,3 +1,6 @@
+#ifndef OPTIMIZER_H
+#define OPTIMIZER_H
+
 #pragma once
 
 #include <iostream>
@@ -7,8 +10,12 @@
 #include <random>
 #include <functional>
 #include <numeric>
+#include <iostream>
 
 using namespace std;
+
+// Definition of a type for the objective function
+using func = std::function<double(std::vector<double>)>;
 
 typedef double(*func)(vector<double>); ///< Pointer to a function that takes an array of doubles representing a value in each dimension and returns a double.
 
@@ -29,6 +36,11 @@ public:
 	//The different optimization schemes
 	vector<double> pso(int dim, int swarm_size, int max_iter, double lower_bound, double upper_bound);
 	vector<double> nelder_mead(int dim, int max_iter, double tol, double lower_bound, double upper_bound);
-	vector<double> dfp(const std::vector<double>& x0, int max_iter = 1000, double tol = 1e-8);
+    std::vector<double> dfp(int dim, int max_iter, double tol, double lower_bound, double upper_bound);
 
+private:
+    func objectiveFunction;
+    double line_search(const std::vector<double> x, const std::vector<double>& d);
 };
+
+#endif // OPTIMIZER_H
